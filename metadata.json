@@ -1,0 +1,7 @@
+{
+  "name": "DocuIntelli SaaS",
+  "description": "An intelligent document processing application for legal professionals. Upload documents, select a workflow like summarization, metadata extraction, or Q&A generation, and get AI-powered insights instantly.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
