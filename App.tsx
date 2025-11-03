@@ -8,6 +8,7 @@ import { HistoryItem, ChatMessage, SpeechRecognition } from './types';
 import { continueChat, fileToGenerativePart } from './services/geminiService';
 import { HistoryPanel } from './components/HistoryPanel';
 import type { Part } from '@google/genai';
+import { PDFDocument } from 'pdf-lib';
 
 const App: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
@@ -45,9 +46,52 @@ const App: React.FC = () => {
     } catch (e) { console.error("Failed to save history", e); }
   }, [history]);
 
-  const handleFileChange = (selectedFiles: File[]) => {
-    setFiles(selectedFiles);
-    handleReset(false);
+  const handleFileChange = async (selectedFiles: File[]) => {
+    setError(null);
+
+    // Handle case where files are cleared
+    if (selectedFiles.length === 0) {
+      setFiles([]);
+      handleReset(false);
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      for (const file of selectedFiles) {
+        if (file.type === 'application/pdf') {
+          const arrayBuffer = await file.arrayBuffer();
+          try {
+            const pdfDoc = await PDFDocument.load(arrayBuffer, {
+              ignoreEncryption: true,
+            });
+            const pageCount = pdfDoc.getPageCount();
+
+            if (pageCount > 1000) {
+              throw new Error(
+                `'${file.name}' (${pageCount} pages) exceeds the 1000-page limit.`
+              );
+            }
+          } catch (pdfError) {
+            console.error('PDF processing error:', pdfError);
+            throw new Error(
+              `Failed to process '${file.name}'. The file may be corrupt or encrypted.`
+            );
+          }
+        }
+      }
+
+      // If all files are valid
+      setFiles(selectedFiles);
+      handleReset(false);
+
+    } catch (e: any) {
+      setError(e.message || 'An error occurred during file validation.');
+      setFiles([]); // Clear files on error to force re-upload
+    } finally {
+      setIsLoading(false);
+    }
   };
   
   const handleSendMessage = async (message: string) => {
