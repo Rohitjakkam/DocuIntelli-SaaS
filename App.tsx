@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { FileUp, Search, History } from 'lucide-react';
+import { FileUp, Search, History, MessageSquare, Mic } from 'lucide-react';
 import { Header } from './components/Header';
 import { FileUpload } from './components/FileUpload';
 import { ChatPanel } from './components/ChatPanel';
@@ -9,6 +9,7 @@ import { continueChat, fileToGenerativePart } from './services/geminiService';
 import { HistoryPanel } from './components/HistoryPanel';
 import type { Part } from '@google/genai';
 import { PDFDocument } from 'pdf-lib';
+import { LiveChatPanel } from './components/LiveChatPanel';
 
 const App: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
@@ -23,12 +24,16 @@ const App: React.FC = () => {
   const [query, setQuery] = useState('');
   const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
 
-  // Speech recognition state
+  // Speech recognition state (for text chat input)
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
   // Speech synthesis state
   const [currentlySpeakingMessageId, setCurrentlySpeakingMessageId] = useState<string | null>(null);
+
+  // Active Tab state
+  const [activeTab, setActiveTab] = useState<'text' | 'voice'>('text');
+
 
   useEffect(() => {
     try {
@@ -109,13 +114,11 @@ const App: React.FC = () => {
     setQuery('');
     setSuggestedQuestions([]);
     
-    // Create a placeholder for the model's response
     const modelMessageId = `model-${Date.now()}`;
     const modelMessagePlaceholder: ChatMessage = { id: modelMessageId, role: 'model', text: '' };
     setChatMessages(prev => [...prev, modelMessagePlaceholder]);
 
     try {
-      // Only include files in the first message of a session
       const fileParts: Part[] = chatMessages.length === 0 
         ? await Promise.all(
             files.map(async (file) => ({
@@ -126,9 +129,8 @@ const App: React.FC = () => {
         
       const result = await continueChat(currentChatHistory, fileParts);
       
-      // Update the placeholder with the actual response
       setChatMessages(prev => prev.map(msg => 
-        msg.id === modelMessageId ? { ...msg, text: result.response } : msg
+        msg.id === modelMessageId ? { ...msg, text: result.response, sources: result.sources } : msg
       ));
       
       setSuggestedQuestions(result.suggestions || []);
@@ -141,7 +143,6 @@ const App: React.FC = () => {
       ));
     } finally {
       setIsLoading(false);
-      // Save the full chat history after the stream is complete
       setChatMessages(prev => {
         saveToHistory(prev);
         return prev;
@@ -152,7 +153,6 @@ const App: React.FC = () => {
   const saveToHistory = (messages: ChatMessage[]) => {
     if (messages.length === 0) return;
     
-    // Use the first user message as the title, or a generic title
     const firstUserMessage = messages.find(m => m.role === 'user')?.text;
     const title = firstUserMessage ? (firstUserMessage.length > 40 ? firstUserMessage.substring(0, 37) + '...' : firstUserMessage) : "New Chat Session";
 
@@ -164,7 +164,6 @@ const App: React.FC = () => {
       fileNames: files.map(f => f.name),
     };
 
-    // Remove previous history entry for the same session if it exists, then add the new one
     const updatedHistory = history.filter(item => item.id !== newItem.id);
     setHistory([newItem, ...updatedHistory]);
     setSelectedHistoryId(newItem.id);
@@ -181,16 +180,16 @@ const App: React.FC = () => {
     setSuggestedQuestions([]);
     if (isRecording) handleStopRecording();
     handleStopSpeaking();
+    // Do not switch tabs on reset, user might want to start a new chat in the same mode
   };
 
   const handleHistoryItemClick = (id: number) => {
     const item = history.find(h => h.id === id);
     if (item) {
-      handleReset(false); // Reset state but keep files
+      handleReset(false); 
       setChatMessages(item.messages);
       setSelectedHistoryId(item.id);
-      // Note: We can't re-select the original files, but we can show their names.
-      // The context of those files is baked into the saved conversation history.
+      setActiveTab('text'); // History is only for text chat
     }
   };
 
@@ -258,7 +257,7 @@ const App: React.FC = () => {
         handleStopSpeaking();
         return;
     }
-    setError(null); // Clear previous errors
+    setError(null);
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.onstart = () => setCurrentlySpeakingMessageId(messageId);
     utterance.onend = () => setCurrentlySpeakingMessageId(null);
@@ -267,7 +266,7 @@ const App: React.FC = () => {
       setCurrentlySpeakingMessageId(null);
       setError(`Speech synthesis error: ${e.error}. Please check your browser audio settings.`);
     }
-    window.speechSynthesis.cancel(); // Stop any previous speech
+    window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
   };
   
@@ -277,9 +276,23 @@ const App: React.FC = () => {
   };
 
   const handleSuggestionClick = (question: string) => {
-    setQuery(question); // Set query for user visibility
+    setQuery(question);
     handleSendMessage(question);
   };
+  
+  const TabButton: React.FC<{title: string; Icon: React.ElementType; active: boolean; onClick: () => void;}> = ({ title, Icon, active, onClick }) => (
+    <button
+      onClick={onClick}
+      className={`flex-1 flex items-center justify-center gap-2 p-3 text-sm font-medium transition-colors border-b-2 ${
+        active
+          ? 'text-sky-400 border-sky-400'
+          : 'text-slate-400 border-transparent hover:bg-slate-700/50 hover:text-slate-200'
+      }`}
+    >
+      <Icon className="h-5 w-5" />
+      {title}
+    </button>
+  );
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900 font-sans">
@@ -287,24 +300,35 @@ const App: React.FC = () => {
       <main className="flex-grow container mx-auto p-4 md:p-8 flex flex-col">
         <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-8">
             <div className="lg:col-span-8 flex flex-col bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
-                <ChatPanel 
-                    messages={chatMessages}
-                    isLoading={isLoading}
-                    onSendMessage={handleSendMessage}
-                    query={query}
-                    setQuery={setQuery}
-                    isRecording={isRecording}
-                    onStartRecording={handleStartRecording}
-                    onStopRecording={handleStopRecording}
-                    onReadAloud={handleReadAloud}
-                    currentlySpeakingMessageId={currentlySpeakingMessageId}
-                    files={files}
-                    onFileChange={handleFileChange}
-                    error={error}
-                    suggestedQuestions={suggestedQuestions}
-                    onSuggestionClick={handleSuggestionClick}
-                    onNewChat={() => handleReset(true)}
-                />
+              <div className="flex-shrink-0 flex border-b border-slate-700">
+                <TabButton title="Text Chat" Icon={MessageSquare} active={activeTab === 'text'} onClick={() => setActiveTab('text')} />
+                <TabButton title="Voice Chat" Icon={Mic} active={activeTab === 'voice'} onClick={() => setActiveTab('voice')} />
+              </div>
+              
+              <div className="flex-grow relative">
+                {activeTab === 'text' ? (
+                  <ChatPanel 
+                      messages={chatMessages}
+                      isLoading={isLoading}
+                      onSendMessage={handleSendMessage}
+                      query={query}
+                      setQuery={setQuery}
+                      isRecording={isRecording}
+                      onStartRecording={handleStartRecording}
+                      onStopRecording={handleStopRecording}
+                      onReadAloud={handleReadAloud}
+                      currentlySpeakingMessageId={currentlySpeakingMessageId}
+                      files={files}
+                      onFileChange={handleFileChange}
+                      error={error}
+                      suggestedQuestions={suggestedQuestions}
+                      onSuggestionClick={handleSuggestionClick}
+                      onNewChat={() => handleReset(true)}
+                  />
+                ) : (
+                  <LiveChatPanel files={files} onFileChange={handleFileChange} setError={setError} />
+                )}
+              </div>
             </div>
             
             <div className="lg:col-span-4 flex flex-col">

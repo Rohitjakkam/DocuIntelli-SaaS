@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Send, Mic, Square, Volume2, Bot, User, FileUp, Sparkles, PlusCircle } from 'lucide-react';
+import { Send, Mic, Square, Volume2, Bot, User, FileUp, Sparkles, PlusCircle, Link } from 'lucide-react';
 import { ChatMessage } from '../types';
 import { FileUpload } from './FileUpload';
 
@@ -75,7 +75,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             <div className="max-w-md mx-auto">
                 <h2 className="text-2xl font-bold text-sky-400 mb-4">Welcome to DocuIntelli SaaS</h2>
                 <p className="text-slate-400 mb-8">
-                    Your AI-powered legal assistant. Upload one or more documents to get started. You can ask for summaries, metadata extraction, draft legal notices, and much more.
+                    Your AI-powered legal assistant. Upload documents for analysis or ask general questions powered by Google Search.
                 </p>
                 <FileUpload files={files} onFileChange={onFileChange} />
                 
@@ -107,7 +107,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 <div className="overflow-hidden">
                     <h3 className="font-semibold text-slate-200 truncate">Current Session</h3>
                     <p className="text-xs text-slate-400 truncate" title={files.map(f => f.name).join(', ')}>
-                       {files.map(f => f.name).join(', ')}
+                       {files.length > 0 ? files.map(f => f.name).join(', ') : 'General Chat'}
                     </p>
                 </div>
                 <button 
@@ -127,7 +127,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             </div>
                         )}
                         <div className={`max-w-xl p-3 rounded-lg ${msg.role === 'user' ? 'bg-slate-700 text-slate-200' : 'bg-slate-900/50 text-slate-300'}`}>
-                            <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
+                            <div className="text-sm whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: msg.text.replace(/\n/g, '<br />') }}></div>
+
+                             {msg.sources && msg.sources.length > 0 && (
+                                <div className="mt-3 pt-3 border-t border-slate-700/50">
+                                    <h4 className="text-xs font-semibold text-slate-400 mb-2 flex items-center gap-2">
+                                        <Link size={12} /> Sources
+                                    </h4>
+                                    <ul className="space-y-1">
+                                    {msg.sources.map((source, i) => (
+                                        <li key={i} className="flex">
+                                            <a href={source.uri} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-400 hover:underline truncate" title={source.uri}>
+                                                {i+1}. {source.title || source.uri}
+                                            </a>
+                                        </li>
+                                    ))}
+                                    </ul>
+                                </div>
+                            )}
+
                              {msg.role === 'model' && msg.text && !isLoading && (
                                 <button
                                     onClick={() => onReadAloud(msg.text, msg.id)}
@@ -204,5 +222,5 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
     );
 
-    return hasStartedChat ? renderChatInterface() : renderWelcomeScreen();
+    return hasStartedChat || files.length > 0 ? renderChatInterface() : renderWelcomeScreen();
 };
