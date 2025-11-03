@@ -1,33 +1,26 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { FileUp, FileText, HelpCircle, FileWarning, Gavel, Search, ClipboardCopy, History } from 'lucide-react';
+import { FileUp, Search, History } from 'lucide-react';
 import { Header } from './components/Header';
 import { FileUpload } from './components/FileUpload';
-import { WorkflowSelector } from './components/WorkflowSelector';
-import { ResultsDisplay } from './components/ResultsDisplay';
 import { ChatPanel } from './components/ChatPanel';
 import { Footer } from './components/Footer';
-import { Workflow, WorkflowOption, HistoryItem, ChatMessage, SpeechRecognition } from './types';
-import { startChat, fileToGenerativePart, runWorkflow } from './services/geminiService';
+import { HistoryItem, ChatMessage, SpeechRecognition } from './types';
+import { continueChat, fileToGenerativePart } from './services/geminiService';
 import { HistoryPanel } from './components/HistoryPanel';
-import type { Chat, Part } from '@google/genai';
+import type { Part } from '@google/genai';
 
 const App: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
-  const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
-  const [query, setQuery] = useState('');
-  const [result, setResult] = useState<string | object | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
-  const [displayedFileName, setDisplayedFileName] = useState<string | undefined>(undefined);
-  const [displayedWorkflowTitle, setDisplayedWorkflowTitle] = useState<string | undefined>(undefined);
 
-  // Chat state
+  // Unified Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatSession, setChatSession] = useState<Chat | null>(null);
-  const chatSessionRef = useRef<Chat | null>(null);
+  const [query, setQuery] = useState('');
+  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
 
   // Speech recognition state
   const [isRecording, setIsRecording] = useState(false);
@@ -45,137 +38,90 @@ const App: React.FC = () => {
 
   useEffect(() => {
     try {
-      localStorage.setItem('docuIntelliHistory', JSON.stringify(history));
+      // Don't save empty chat sessions to history
+      if (history.some(item => item.messages.length > 0)) {
+        localStorage.setItem('docuIntelliHistory', JSON.stringify(history));
+      }
     } catch (e) { console.error("Failed to save history", e); }
   }, [history]);
-  
-  // Effect to manage chat session reference
-  useEffect(() => {
-    chatSessionRef.current = chatSession;
-  }, [chatSession]);
 
-  const workflowOptions: WorkflowOption[] = useMemo(() => [
-    { id: Workflow.EXTRACT_METADATA, title: 'Extract Metadata', description: 'Extract key info like case name, judges, and dates.', icon: FileText },
-    { id: Workflow.SUMMARIZE_QA, title: 'Summarize & Q&A', description: 'Generate a summary and potential Q&A from the document.', icon: HelpCircle },
-    { id: Workflow.RAG_QUERY, title: 'Query Document (Chat)', description: 'Start an interactive chat about the document contents.', icon: Search, requiresQuery: true },
-    { id: Workflow.DRAFT_NOTICE, title: 'Draft Legal Notice', description: 'Generate a draft legal notice based on the document.', icon: Gavel },
-    { id: Workflow.DETECT_MISSING_CLAUSES, title: 'Find Missing Clauses', description: 'Analyze contracts for missing standard clauses.', icon: FileWarning },
-  ], []);
-
-  const currentWorkflow = useMemo(() => workflowOptions.find(w => w.id === selectedWorkflow), [selectedWorkflow, workflowOptions]);
-  
   const handleFileChange = (selectedFiles: File[]) => {
     setFiles(selectedFiles);
     handleReset(false);
   };
   
-  const handleProcessClick = async () => {
-    if (files.length === 0 || !selectedWorkflow || !currentWorkflow) {
-      setError('Please select one or more files and a workflow.');
-      return;
-    }
-    if (currentWorkflow.requiresQuery && !query.trim()) {
-      setError('Please enter an initial query for this workflow.');
+  const handleSendMessage = async (message: string) => {
+    if (files.length === 0 && chatMessages.length === 0) {
+      setError('Please upload at least one document to start the chat.');
       return;
     }
 
+    const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: 'user', text: message };
+    const currentChatHistory = [...chatMessages, userMessage];
+
+    setChatMessages(currentChatHistory);
     setIsLoading(true);
-    setResult(null);
     setError(null);
-    setSelectedHistoryId(null);
-    setChatMessages([]);
-    setChatSession(null);
-    setDisplayedFileName(files.map(f => f.name).join(', '));
-    setDisplayedWorkflowTitle(currentWorkflow.title);
+    setQuery('');
+    setSuggestedQuestions([]);
+    
+    // Create a placeholder for the model's response
+    const modelMessageId = `model-${Date.now()}`;
+    const modelMessagePlaceholder: ChatMessage = { id: modelMessageId, role: 'model', text: '' };
+    setChatMessages(prev => [...prev, modelMessagePlaceholder]);
 
     try {
-      if (selectedWorkflow === Workflow.RAG_QUERY) {
-        const newChatSession = await startChat();
-        setChatSession(newChatSession);
-        await handleSendChatMessage(query, newChatSession, files);
-      } else {
-        const apiResult = await runWorkflow(files, selectedWorkflow);
-        setResult(apiResult);
-        saveToHistory(apiResult);
-      }
+      // Only include files in the first message of a session
+      const fileParts: Part[] = chatMessages.length === 0 
+        ? await Promise.all(
+            files.map(async (file) => ({
+                inlineData: await fileToGenerativePart(file)
+            }))
+          ) 
+        : [];
+        
+      const result = await continueChat(currentChatHistory, fileParts);
+      
+      // Update the placeholder with the actual response
+      setChatMessages(prev => prev.map(msg => 
+        msg.id === modelMessageId ? { ...msg, text: result.response } : msg
+      ));
+      
+      setSuggestedQuestions(result.suggestions || []);
+
     } catch (e) {
       console.error(e);
-      setError(e instanceof Error ? e.message : 'An unknown error occurred.');
+      const errorText = e instanceof Error ? e.message : 'An unknown error occurred.';
+       setChatMessages(prev => prev.map(msg => 
+        msg.id === modelMessageId ? { ...msg, text: `Error: ${errorText}` } : msg
+      ));
     } finally {
       setIsLoading(false);
+      // Save the full chat history after the stream is complete
+      setChatMessages(prev => {
+        saveToHistory(prev);
+        return prev;
+      });
     }
   };
-  
-  const handleSendChatMessage = async (message: string, session?: Chat | null, initialFiles?: File[]) => {
-      const currentSession = session || chatSessionRef.current;
-      const documentFiles = initialFiles || files;
 
-      if (documentFiles.length === 0 || (!currentSession && selectedWorkflow !== Workflow.RAG_QUERY)) return;
-
-      const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: 'user', text: message };
-      setChatMessages(prev => [...prev, userMessage]);
-      setIsLoading(true);
-      setError(null);
-      setQuery('');
-
-      const modelMessage: ChatMessage = { id: `model-${Date.now()}`, role: 'model', text: '' };
-      setChatMessages(prev => [...prev, modelMessage]);
-
-      try {
-          const fileParts: Part[] = await Promise.all(
-              documentFiles.map(async (file) => ({
-                  inlineData: await fileToGenerativePart(file)
-              }))
-          );
-          
-          const messagePayload: (string | Part)[] = [
-              { text: message },
-              ...fileParts
-          ];
-          
-          const stream = await currentSession.sendMessageStream({
-            message: messagePayload,
-          });
-
-          for await (const chunk of stream) {
-              const chunkText = chunk.text;
-              if (chunkText) {
-                  setChatMessages(prev => prev.map(msg => 
-                      msg.id === modelMessage.id ? { ...msg, text: msg.text + chunkText } : msg
-                  ));
-              }
-          }
-      } catch (e) {
-          console.error(e);
-          const errorText = e instanceof Error ? e.message : 'An error occurred while streaming the response.';
-          setChatMessages(prev => prev.map(msg => 
-              msg.id === modelMessage.id ? { ...msg, text: `Error: ${errorText}` } : msg
-          ));
-      } finally {
-          setIsLoading(false);
-          // Save the full chat history after the stream is complete
-          setChatMessages(prev => {
-              saveToHistory(prev);
-              return prev;
-          });
-      }
-  };
-
-  const saveToHistory = (data: string | object | ChatMessage[]) => {
-    if (files.length === 0 || !currentWorkflow) return;
+  const saveToHistory = (messages: ChatMessage[]) => {
+    if (messages.length === 0) return;
     
-    // Remove previous history entry for the same session if it exists
-    const updatedHistory = history.filter(item => item.id !== selectedHistoryId);
+    // Use the first user message as the title, or a generic title
+    const firstUserMessage = messages.find(m => m.role === 'user')?.text;
+    const title = firstUserMessage ? (firstUserMessage.length > 40 ? firstUserMessage.substring(0, 37) + '...' : firstUserMessage) : "New Chat Session";
 
     const newItem: HistoryItem = {
       id: selectedHistoryId || Date.now(),
-      fileName: files.map(f => f.name).join(', '),
-      workflowTitle: currentWorkflow.title,
-      workflowId: selectedWorkflow,
-      query: Array.isArray(data) ? data.find(m => m.role === 'user')?.text : query,
+      title: title,
       timestamp: new Date().toISOString(),
-      result: data,
+      messages: messages,
+      fileNames: files.map(f => f.name),
     };
+
+    // Remove previous history entry for the same session if it exists, then add the new one
+    const updatedHistory = history.filter(item => item.id !== newItem.id);
     setHistory([newItem, ...updatedHistory]);
     setSelectedHistoryId(newItem.id);
   };
@@ -183,17 +129,12 @@ const App: React.FC = () => {
 
   const handleReset = (fullReset = true) => {
     if (fullReset) setFiles([]);
-    setSelectedWorkflow(null);
     setQuery('');
-    setResult(null);
     setIsLoading(false);
     setError(null);
     setSelectedHistoryId(null);
-    setDisplayedFileName(undefined);
-    setDisplayedWorkflowTitle(undefined);
     setChatMessages([]);
-    setChatSession(null);
-    chatSessionRef.current = null;
+    setSuggestedQuestions([]);
     if (isRecording) handleStopRecording();
     handleStopSpeaking();
   };
@@ -202,23 +143,17 @@ const App: React.FC = () => {
     const item = history.find(h => h.id === id);
     if (item) {
       handleReset(false); // Reset state but keep files
-      if(item.workflowId === Workflow.RAG_QUERY && Array.isArray(item.result)) {
-        setChatMessages(item.result);
-        setResult(null);
-      } else {
-        setResult(item.result);
-        setChatMessages([]);
-      }
-      setSelectedWorkflow(item.workflowId);
+      setChatMessages(item.messages);
       setSelectedHistoryId(item.id);
-      setDisplayedFileName(item.fileName);
-      setDisplayedWorkflowTitle(item.workflowTitle);
+      // Note: We can't re-select the original files, but we can show their names.
+      // The context of those files is baked into the saved conversation history.
     }
   };
 
   const handleClearHistory = () => {
     if (window.confirm('Are you sure? This will clear your entire history.')) {
       setHistory([]);
+      localStorage.removeItem('docuIntelliHistory');
       handleReset();
     }
   };
@@ -297,43 +232,21 @@ const App: React.FC = () => {
     setCurrentlySpeakingMessageId(null);
   };
 
-  const isProcessButtonDisabled = files.length === 0 || !selectedWorkflow || isLoading || (currentWorkflow?.requiresQuery && !query.trim());
-  const isChatActive = selectedWorkflow === Workflow.RAG_QUERY && (chatMessages.length > 0 || isLoading);
+  const handleSuggestionClick = (question: string) => {
+    setQuery(question); // Set query for user visibility
+    handleSendMessage(question);
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900 font-sans">
       <Header />
-      <main className="flex-grow container mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-4 flex flex-col space-y-8">
-          <div>
-            <h2 className="text-2xl font-bold text-sky-400 mb-4 flex items-center"><span className="bg-sky-400/20 text-sky-300 rounded-full h-8 w-8 flex items-center justify-center mr-3 font-mono text-lg">1</span> Configure</h2>
-            <div className="bg-slate-800/50 p-6 rounded-lg border border-slate-700 space-y-6">
-              <FileUpload files={files} onFileChange={handleFileChange} />
-              <WorkflowSelector options={workflowOptions} selected={selectedWorkflow} onSelect={setSelectedWorkflow} />
-              {currentWorkflow?.requiresQuery && !isChatActive && (
-                <div>
-                  <label htmlFor="query" className="block text-sm font-medium text-slate-300 mb-2">Initial Query</label>
-                  <input type="text" id="query" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="e.g., What was the final ruling?" className="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500" />
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex space-x-4">
-             <button onClick={handleProcessClick} disabled={isProcessButtonDisabled || isChatActive} className="w-full flex-1 inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-sky-600 hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 disabled:bg-slate-600 disabled:cursor-not-allowed transition-colors">
-              {isLoading && !isChatActive ? 'Processing...' : 'Start Session'}
-            </button>
-            <button onClick={() => handleReset(true)} className="px-6 py-3 border border-slate-600 text-base font-medium rounded-md text-slate-300 hover:bg-slate-700 hover:text-white transition-colors">Reset</button>
-          </div>
-        </div>
-        
-        <div className="lg:col-span-5 flex flex-col">
-          <h2 className="text-2xl font-bold text-sky-400 mb-4 flex items-center"><span className="bg-sky-400/20 text-sky-300 rounded-full h-8 w-8 flex items-center justify-center mr-3 font-mono text-lg">2</span> Results</h2>
-          <div className="flex-grow bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
-            {isChatActive ? (
+      <main className="flex-grow container mx-auto p-4 md:p-8 flex flex-col">
+        <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <div className="lg:col-span-8 flex flex-col bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
                 <ChatPanel 
                     messages={chatMessages}
                     isLoading={isLoading}
-                    onSendMessage={(msg) => handleSendChatMessage(msg)}
+                    onSendMessage={handleSendMessage}
                     query={query}
                     setQuery={setQuery}
                     isRecording={isRecording}
@@ -341,17 +254,20 @@ const App: React.FC = () => {
                     onStopRecording={handleStopRecording}
                     onReadAloud={handleReadAloud}
                     currentlySpeakingMessageId={currentlySpeakingMessageId}
+                    files={files}
+                    onFileChange={handleFileChange}
+                    error={error}
+                    suggestedQuestions={suggestedQuestions}
+                    onSuggestionClick={handleSuggestionClick}
+                    onNewChat={() => handleReset(true)}
                 />
-            ) : (
-                <ResultsDisplay isLoading={isLoading} error={error} result={result} fileName={displayedFileName} workflow={displayedWorkflowTitle} hasHistory={history.length > 0} />
-            )}
-          </div>
-        </div>
-        
-        <div className="lg:col-span-3 flex flex-col">
-            <h2 className="text-2xl font-bold text-sky-400 mb-4 flex items-center"><span className="bg-sky-400/20 text-sky-300 rounded-full h-8 w-8 flex items-center justify-center mr-3 font-mono text-lg">3</span> History</h2>
-            <div className="flex-grow bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
-                <HistoryPanel history={history} selectedId={selectedHistoryId} onItemClick={handleHistoryItemClick} onClear={handleClearHistory} />
+            </div>
+            
+            <div className="lg:col-span-4 flex flex-col">
+                <h2 className="text-2xl font-bold text-sky-400 mb-4 flex items-center"><History className="h-6 w-6 mr-3 text-sky-400/80" /> History</h2>
+                <div className="flex-grow bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
+                    <HistoryPanel history={history} selectedId={selectedHistoryId} onItemClick={handleHistoryItemClick} onClear={handleClearHistory} />
+                </div>
             </div>
         </div>
       </main>

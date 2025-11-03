@@ -27,8 +27,8 @@ const timeAgo = (date: string) => {
 export const HistoryPanel: React.FC<HistoryPanelProps> = ({ history, selectedId, onItemClick, onClear }) => {
   return (
     <div className="h-full flex flex-col">
-      <div className="p-4 border-b border-slate-700 flex justify-between items-center">
-        <h3 className="font-semibold text-slate-200">Processing History</h3>
+      <div className="p-4 border-b border-slate-700 flex justify-between items-center flex-shrink-0">
+        <h3 className="font-semibold text-slate-200">Chat History</h3>
         {history.length > 0 && (
           <button 
             onClick={onClear} 
@@ -45,7 +45,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({ history, selectedId,
           <div className="flex flex-col items-center justify-center h-full text-center p-4">
             <History className="h-12 w-12 text-slate-600" />
             <p className="mt-2 text-sm text-slate-400">No history yet</p>
-            <p className="text-xs text-slate-500">Your processed documents will appear here.</p>
+            <p className="text-xs text-slate-500">Your chat sessions will appear here.</p>
           </div>
         ) : (
           <ul className="divide-y divide-slate-700/50">
@@ -57,29 +57,29 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({ history, selectedId,
                     item.id === selectedId ? 'bg-sky-500/20' : 'hover:bg-slate-700/50'
                   }`}
                 >
+                   <div className="flex justify-between items-start">
+                      <p 
+                        className={`font-medium pr-4 ${
+                          item.id === selectedId ? 'text-sky-300' : 'text-slate-200'
+                        }`}
+                        title={item.title}
+                      >
+                        {item.title}
+                      </p>
+                       <span 
+                          className="text-slate-500 text-xs flex-shrink-0" 
+                          title={new Date(item.timestamp).toLocaleString()}
+                        >
+                          {timeAgo(item.timestamp)}
+                        </span>
+                   </div>
+
                   <p 
-                    className={`font-medium truncate ${
-                      item.id === selectedId ? 'text-sky-300' : 'text-slate-200'
-                    }`}
-                    title={item.fileName}
+                    className="text-xs text-slate-400 mt-1 truncate"
+                    title={item.fileNames.join(', ')}
                   >
-                    {item.fileName}
+                    Files: {item.fileNames.join(', ')}
                   </p>
-                  <div className="flex justify-between items-center text-xs mt-1">
-                    <span 
-                      className={`px-2 py-0.5 rounded-full ${
-                        item.id === selectedId ? 'bg-sky-500/30 text-sky-300' : 'bg-slate-700 text-slate-400'
-                      }`}
-                    >
-                      {item.workflowTitle}
-                    </span>
-                    <span 
-                      className="text-slate-500" 
-                      title={new Date(item.timestamp).toLocaleString()}
-                    >
-                      {timeAgo(item.timestamp)}
-                    </span>
-                  </div>
                 </button>
               </li>
             ))}
